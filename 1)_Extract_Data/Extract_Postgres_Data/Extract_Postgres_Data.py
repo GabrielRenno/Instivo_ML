@@ -1,6 +1,7 @@
 import pandas as pd
 from sshtunnel import SSHTunnelForwarder
 import psycopg2
+import os
 
 # --------------------------------------------------------
 #  Update these variables as needed
@@ -48,13 +49,12 @@ def download_and_merge_data():
         nf_df = pd.read_sql("SELECT id, chave FROM nota_fiscal", conn)
         entrega_df = pd.read_sql(
             """
-            SELECT id, doca_id, data_agendamento, tipo_veiculo, tipo_carga, tipo_volume, quantidade_volume, status 
+            SELECT id as entrega_id, doca_id, data_agendamento, veiculo_id, tipo_veiculo, tipo_carga, motorista_id, tipo_volume, quantidade_volume, status 
             FROM entrega
             """, conn)
         entrega_nota_df = pd.read_sql("SELECT entrega_id, nota_fiscal_id FROM entrega_nota_fiscal", conn)
         doca_veiculo = pd.read_sql("SELECT doca_id, tipo_veiculo FROM doca_tipo_veiculo", conn)
         doca_carga = pd.read_sql("SELECT doca_id, tipo_carga FROM doca_tipo_carga", conn)
-        
         conn.close()
 
     # --- Data Merging ---
@@ -62,8 +62,7 @@ def download_and_merge_data():
     merged_df = pd.merge(
         entrega_df, 
         entrega_nota_df, 
-        left_on='id', 
-        right_on='entrega_id', 
+        on='entrega_id', 
         how='inner'
     )
 
@@ -77,44 +76,46 @@ def download_and_merge_data():
         suffixes=('_entrega', '_nf')
     )
 
-    # 3. Merge dock vehicle types (using doca_id); original entrega table may have its own tipo_veiculo.
-    #    The merge adds the dock's tipo_veiculo as a new column via a suffix.
+    # 3. Aggregate dock vehicle types as a list for each doca_id.
+    #    This produces a new column "tipo_veiculo_doca" containing a list of vehicles available for that dock.
+    doca_veiculo_list = doca_veiculo.groupby('doca_id')['tipo_veiculo'].apply(list).reset_index()
+    doca_veiculo_list.rename(columns={'tipo_veiculo': 'tipo_veiculo_doca'}, inplace=True)
     merged_df = pd.merge(
         merged_df,
-        doca_veiculo,
+        doca_veiculo_list,
         on='doca_id',
-        how='left',
-        suffixes=('', '_doca')
+        how='left'
     )
 
-    # 4. Merge dock carga types (using doca_id) to add the dock's tipo_carga.
+    # 4. Aggregate dock carga types as a list for each doca_id from SQL.
+    doca_carga_list = doca_carga.groupby('doca_id')['tipo_carga'].apply(list).reset_index()
+    doca_carga_list.rename(columns={'tipo_carga': 'tipo_carga_doca'}, inplace=True)
     merged_df = pd.merge(
         merged_df,
-        doca_carga,
+        doca_carga_list,
         on='doca_id',
-        how='left',
-        suffixes=('', '_doca')
+        how='left'
     )
 
     # 5. Select and reorder final columns.
-    # Here we choose:
-    #   - 'chave' from nota_fiscal,
-    #   - 'doca_id' and 'data_agendamento' from entrega,
-    #   - 'tipo_veiculo_doca' and 'tipo_carga_doca' coming from the dock tables,
-    #   - and other delivery fields.
     final_df = merged_df[[
+        'entrega_id',
         'chave',
         'doca_id',
         'data_agendamento',
+        'veiculo_id',
+        'tipo_veiculo',
+        'motorista_id',
         'tipo_veiculo_doca',
-        'tipo_carga_doca',
+        'tipo_carga',        # from the entrega table
+        'tipo_carga_doca',   # aggregated from doca_tipo_carga SQL
         'tipo_volume',
         'quantidade_volume',
         'status'
     ]]
     
     # Save the final merged dataset.
-    final_df.to_csv('1)_Extract_Data/Extract_Postgres_Data/Data/delivery_merged.csv', index=False)
+    final_df.to_csv('1)_Extract_Data/Extract_Postgres_Data/Data/data_frame_postgres.csv', index=False)
     return final_df
 
 if __name__ == '__main__':

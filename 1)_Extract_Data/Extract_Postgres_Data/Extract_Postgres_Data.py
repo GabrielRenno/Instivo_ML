@@ -55,6 +55,9 @@ def download_and_merge_data():
         entrega_nota_df = pd.read_sql("SELECT entrega_id, nota_fiscal_id FROM entrega_nota_fiscal", conn)
         doca_veiculo = pd.read_sql("SELECT doca_id, tipo_veiculo FROM doca_tipo_veiculo", conn)
         doca_carga = pd.read_sql("SELECT doca_id, tipo_carga FROM doca_tipo_carga", conn)
+        entrega_pedido_df = pd.read_sql("SELECT entrega_id, numero_pedido FROM entrega_pedido", conn)
+        doca_caracteristica = pd.read_sql("SELECT doca_id, caracteristica FROM doca_caracteristica", conn)
+        items_df = pd.read_sql("SELECT nota_fiscal_id, descricao, tipo_embalagem, quantidade_vendida_embalagem, valor_embalagem FROM item", conn)
         conn.close()
 
     # --- Data Merging ---
@@ -97,11 +100,48 @@ def download_and_merge_data():
         how='left'
     )
 
+    # 4.5. Merge entrega_pedido to get numero_pedido using entrega_id.
+    merged_df = pd.merge(
+        merged_df,
+        entrega_pedido_df,
+        on='entrega_id',
+        how='left'
+    )
+
+    # 4.6. Merge doca_caracteristica to get the caracteristica for each dock using doca_id.
+    merged_df = pd.merge(
+        merged_df,
+        doca_caracteristica,
+        on='doca_id',
+        how='left'
+    )
+
+    # 4.7. Merge items to get aggregated item details from the table item.
+    items_agg = items_df.groupby('nota_fiscal_id').agg({
+        'descricao': lambda x: ', '.join(x),
+        'tipo_embalagem': lambda x: ', '.join(x.astype(str)),
+        'quantidade_vendida_embalagem': lambda x: ', '.join(x.astype(str)),
+        'valor_embalagem': lambda x: ', '.join(x.astype(str))
+    }).reset_index()
+    items_agg.rename(columns={'descricao': 'descricao_itens'}, inplace=True)
+    merged_df = pd.merge(
+        merged_df,
+        items_agg,
+        on='nota_fiscal_id',
+        how='left'
+    )
+
     # 5. Select and reorder final columns.
     final_df = merged_df[[
         'entrega_id',
         'chave',
+        'numero_pedido',
+        'descricao_itens',
+        'tipo_embalagem',
+        'quantidade_vendida_embalagem',
+        'valor_embalagem',
         'doca_id',
+        'caracteristica',
         'data_agendamento',
         'veiculo_id',
         'tipo_veiculo',
@@ -114,6 +154,31 @@ def download_and_merge_data():
         'status'
     ]]
     
+    # Rename columns to match the desired output
+    final_df.rename(columns={
+        'entrega_id': 'Entrega ID',
+        'chave': 'NFkey',
+        'numero_pedido': 'Número do Pedido',
+        'descricao_itens': 'Descrição dos Itens',
+        'tipo_embalagem': 'Tipo de Embalagem',
+        'quantidade_vendida_embalagem': 'Quantidade Vendida Embalagem',
+        'valor_embalagem': 'Valor Embalagem',
+        'doca_id': 'Doca ID',
+        'caracteristica': 'Característica_Doca',
+        'data_agendamento': 'Data de Agendamento',
+        'veiculo_id': 'Veículo ID',
+        'tipo_veiculo': 'Tipo de Veículo',
+        'motorista_id': 'Motorista ID',
+        'tipo_veiculo_doca': 'Tipo de Veículo_Doca',
+        'tipo_carga': 'Tipo de Carga',
+        'tipo_carga_doca': 'Tipo de Carga_Doca',
+        'tipo_volume': 'Tipo de Volume',    
+        'quantidade_volume': 'Quantidade de Volume',
+        'status': 'Status'
+    }, inplace=True)
+    
+
+
     # Save the final merged dataset.
     final_df.to_csv('1)_Extract_Data/Extract_Postgres_Data/Data/data_frame_postgres.csv', index=False)
     return final_df

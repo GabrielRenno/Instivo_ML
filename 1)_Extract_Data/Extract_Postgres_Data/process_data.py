@@ -4,7 +4,6 @@ from tqdm import tqdm
 import numpy as np
 
 def connect_mongodb():
-    """Estabelece conexão com o MongoDB"""
     connection_string = "mongodb://ipaas:EjnuRkikGWa9gEbV@mongo.instivo.com.br:27017/ipaas"
     client = MongoClient(connection_string)
     return client['ipaas']
@@ -54,6 +53,37 @@ def extract_supp_ids(supp_list):
     if isinstance(supp_list, list):
         return [item['suppId'] for item in supp_list if 'suppId' in item]
     return []
+
+def get_nf_data(db, recload_ids):
+    """Busca dados de notas fiscais para os recLoadIds e agrupa em listas"""
+    print("Buscando dados de notas fiscais...")
+    
+    collection = db['invReceivedLoadsPrd']
+    
+    pipeline = [
+        {'$match': {'recLoadId': {'$in': recload_ids}}},
+        {'$group': {
+            '_id': '$recLoadId',
+            'nfKeys': {'$push': '$nfKey'},
+            'nfIds': {'$push': '$nfId'}
+        }},
+        {'$project': {
+            '_id': 0,
+            'recLoadId': '$_id',
+            'nfKeys': 1,
+            'nfIds': 1
+        }}
+    ]
+    
+    nf_docs = list(collection.aggregate(pipeline))
+    
+    if not nf_docs:
+        print("Nenhum dado de nota fiscal encontrado!")
+        return pd.DataFrame()
+    
+    df_nf = pd.DataFrame(nf_docs)
+    print(f"Notas fiscais encontradas para {len(df_nf)} recLoadIds")
+    return df_nf
 
 def main():
     print("Iniciando processamento dos dados...")
@@ -152,10 +182,35 @@ def main():
     df_base_product_bus['Fornecedores'] = df_base_product_bus['supp_ids'].apply(get_supplier_names)
     df_base_product_bus = df_base_product_bus.drop('supp_ids', axis=1)
     
+    # Adicionar notas fiscais
+    print("\nAdicionando informações de notas fiscais...")
+    recload_ids = df_base_product_bus['recLoadId'].unique().tolist()
+    df_nf = get_nf_data(db, recload_ids)
+    
+    if not df_nf.empty:
+        # Fazer merge dos dados com notas fiscais
+        df_final = df_base_product_bus.merge(
+            df_nf,
+            on='recLoadId',
+            how='left'
+        )
+        
+        # Converter NaN para listas vazias
+        df_final['nfKeys'] = df_final['nfKeys'].apply(lambda x: x if isinstance(x, list) else [])
+        df_final['nfIds'] = df_final['nfIds'].apply(lambda x: x if isinstance(x, list) else [])
+        
+        print("\nEstatísticas de notas fiscais:")
+        print(f"Registros com notas fiscais: {df_final['nfKeys'].apply(len).gt(0).sum()}")
+        print(f"Média de NFs por registro: {df_final['nfKeys'].apply(len).mean():.2f}")
+        print(f"Máximo de NFs por registro: {df_final['nfKeys'].apply(len).max()}")
+    else:
+        df_final = df_base_product_bus
+        print("Nenhuma nota fiscal encontrada para adicionar")
+
     # Salvar resultado
-    output_file = 'base_product_bus_sup.csv'
-    print(f"Salvando resultado em {output_file}...")
-    df_base_product_bus.to_csv(output_file, index=False)
+    output_file = 'base_product_bus_sup_nfkey_nfid.csv'
+    print(f"\nSalvando resultado em {output_file}...")
+    df_final.to_csv(output_file, index=False, encoding='utf-8-sig')
     print("Processamento concluído!")
 
 if __name__ == "__main__":
